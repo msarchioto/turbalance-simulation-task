@@ -1,0 +1,21 @@
+[project]
+name = "clos-generator"
+version = "0.1.0"
+description = "2-layer CLOS topology generator for HPC network simulation"
+readme = "README.md"
+authors = [
+    { name = "msarchioto", email = "sarchioto@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.10.8",
+]
+
+[project.scripts]
+clos-generate = "clos_generator.cli:main"
+clos-sweep = "clos_generator.sweep:main"
+clos-visualize = "clos_generator.visualize:main"
+
+[build-system]
+requires = ["uv_build>=0.10.6,<0.11.0"]
+build-backend = "uv_build"
