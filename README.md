@@ -6,9 +6,9 @@ while maintaining full symmetry and bisection bandwidth.
 
 Google Slide Presentation: [link](https://docs.google.com/presentation/d/1KPUpbwwkNCe5dkujLZHlIwLRMtDhSrhHGaB6vuhhZjk/edit?usp=sharing)
 
-## Task
+## CLOS Task
 
-Build a topology generation script that takes:
+Build a CLOS topology generation script that takes:
 
 - **Switch throughput** -- total switching capacity per switch (e.g. 6400 Gbps)
 - **NIC throughput** -- total escape throughput per network card (e.g. 800 Gbps)
@@ -59,7 +59,7 @@ uv run dragonfly-generate \
   --switch-throughput 6400 \
   --nic-throughput 800 \
   --link-bandwidth 200 \
-  --num-hosts 64
+  --num-hosts 128
 
 uv run dragonfly-sweep \
   --switch-throughput 6400 \
@@ -130,7 +130,7 @@ spine's per-leaf budget (`<= max_links_per_pair`). Larger `links_per_pair`
 means fewer spines needed, which minimizes total switch count.
 
 For example with 32-port switches and 4 leafs: `max_links_per_pair = 32/4 = 8`,
-`north_ports = 16`, `links_per_pair = 8` (largest divisor of 16 <= 8),
+`north_ports = 16`, `links_per_pair = 8` (largest divisor of 16, <= 8),
 `num_spines = 16/8 = 2`.
 
 ### No Oversubscription
@@ -201,7 +201,7 @@ uv run clos-sweep --switch-throughput 6400 --nic-throughput 800 --link-bandwidth
 
 With only 4 hosts and the default parameters (6400G switch, 800G NIC, 200G links),
 the math yields **1 leaf** and **1 spine**. Since all hosts attach to a single leaf,
-the spine appears redundant -- the leaf's internal backplane can handle all
+the spine appears redundant, the leaf's internal backplane can handle all
 host-to-host traffic without an extra hop.
 
 The spine is retained for three reasons:
@@ -258,11 +258,13 @@ inter-leaf switching, not just topological correctness.
 
 ## Dragonfly Topology
 
-The Dragonfly topology (Kim et al., 2008) is a hierarchical network with three
-levels: **router, group, system**. Routers within a group are fully connected
-(all-to-all), and groups are interconnected by global links. This reduces the
-number of expensive long-distance cables while maintaining low diameter (at most
-one global hop on minimal routes).
+The Dragonfly topology is a hierarchical network with three levels: **router,
+group, system**. Routers within a group are fully connected (all-to-all), and
+groups are interconnected by global links. This minimizes expensive long-distance
+cables while keeping network diameter low (at most one global hop on minimal
+routes).
+
+![Example Dragonfly topology](example_dragonfly_topology.png)
 
 ### Dragonfly Quick Start
 
@@ -271,7 +273,7 @@ uv run dragonfly-generate \
   --switch-throughput 6400 \
   --nic-throughput 800 \
   --link-bandwidth 200 \
-  --num-hosts 64
+  --num-hosts 128
 
 uv run dragonfly-sweep \
   --switch-throughput 6400 \
@@ -298,7 +300,9 @@ Each router's `k` ports are partitioned into:
 | Global | `h` | Inter-group |
 
 Where `p` = hosts per router, `a` = routers per group, `h` = global links per
-router. These satisfy: `p * links_per_host + (a - 1) + h = k`.
+router. These satisfy: `p * links_per_host + (a - 1) + h = k`: every physical
+port on the switch is assigned exactly one role, with nothing wasted or
+overcommitted.
 
 The generator searches over valid `(a, h, p, g)` combinations that satisfy the
 port equation and host-capacity constraints.
@@ -312,7 +316,10 @@ The optimizer in `src/dragonfly_generator/topology.py` uses this objective:
 3. **Tie-break by overprovisioning**: minimize `capacity - num_hosts`
 
 This is a lexicographic optimization: lower router count dominates all other
-criteria.
+criteria. The trade-off is that aggressively minimizing routers can starve
+inter-group bandwidth: e.g. the 128-host result assigns only `h=1` global link
+per router, creating a significant bottleneck between groups. The overall
+network cost is still much lower than CLOS.
 
 ### Dragonfly Design Philosophy (This Implementation)
 
@@ -325,21 +332,6 @@ criteria.
 - **Simple output contract**: flat `[src, dst, speed]` links with aggregated
   host-to-router bandwidth
 
-### Dragonfly vs CLOS (Pros/Cons)
-
-| Aspect | Dragonfly (this repo) | CLOS (this repo) |
-|---|---|---|
-| Topology depth / hop profile | **Pro**: hierarchical groups can keep diameter low with fewer stages | **Con vs Dragonfly**: fixed 2-stage leaf/spine path for inter-leaf traffic |
-| Infrastructure count objective | **Pro**: optimizer targets minimum routers first (`a*g`) | **Pro**: also minimizes switches, but under strict 2-layer structure |
-| Long-distance wiring pressure | **Pro**: global links are explicit and degree-constrained (`h` per router), often reducing high-cost inter-group cabling | **Con**: every leaf connects northbound to spines; can increase core-facing cabling |
-| Port budgeting flexibility | **Pro**: can trade terminal/local/global ports via `(p,a,h)` search | **Con**: fixed 50/50 south/north split may be less flexible for some host targets |
-| Operational simplicity | **Con**: more parameters (`a,h,p,g`) and richer wiring rules | **Pro**: simpler mental model (leaf/spine) and easier to reason about |
-| Uniformity / predictability | **Con**: optimized Dragonfly may choose small groups or high `h` at low `N` (can look unintuitive) | **Pro**: structure stays consistent across scales in this implementation |
-| Link semantics in output | **Con**: three link classes (host/local/global) to analyze | **Pro**: two main classes (host-leaf, leaf-spine) are easier to inspect |
-
-Practical rule of thumb in this project: use Dragonfly when router-count
-efficiency and global-link degree control matter most; use CLOS when simpler
-layout, easier operations, and predictable 2-layer behavior are preferred.
 
 ### Network Size
 
@@ -395,6 +387,22 @@ uv run dragonfly-sweep --switch-throughput 6400 --nic-throughput 800 --link-band
 
 Same idempotency semantics as the CLOS sweep: skips existing outputs, supports
 `--force`, reports per-configuration results.
+
+### Dragonfly vs CLOS (Pros/Cons)
+
+| Aspect | Dragonfly (this repo) | CLOS (this repo) |
+|---|---|---|
+| Topology depth / hop profile | **Pro**: hierarchical groups can keep diameter low with fewer stages | **Con vs Dragonfly**: fixed 2-stage leaf/spine path for inter-leaf traffic |
+| Infrastructure count objective | **Pro**: optimizer targets minimum routers first (`a*g`) | **Pro**: also minimizes switches, but under strict 2-layer structure |
+| Long-distance wiring pressure | **Pro**: global links are explicit and degree-constrained (`h` per router), often reducing high-cost inter-group cabling | **Con**: every leaf connects northbound to spines; can increase core-facing cabling |
+| Port budgeting flexibility | **Pro**: can trade terminal/local/global ports via `(p,a,h)` search | **Con**: fixed 50/50 south/north split may be less flexible for some host targets |
+| Operational simplicity | **Con**: more parameters (`a,h,p,g`) and richer wiring rules | **Pro**: simpler mental model (leaf/spine) and easier to reason about |
+| Uniformity / predictability | **Con**: optimized Dragonfly may choose small groups or high `h` at low `N` (can look unintuitive) | **Pro**: structure stays consistent across scales in this implementation |
+| Link semantics in output | **Con**: three link classes (host/local/global) to analyze | **Pro**: two main classes (host-leaf, leaf-spine) are easier to inspect |
+
+Practical rule of thumb in this project: use Dragonfly when router-count
+efficiency and global-link degree control matter most; use CLOS when simpler
+layout, easier operations, and predictable 2-layer behavior are preferred.
 
 ## Source Modules
 
