@@ -4,6 +4,32 @@
 Produces non-oversubscribed fabrics with the minimum number of switches
 while maintaining full symmetry and bisection bandwidth.
 
+Google Slide Presentation: [link](https://docs.google.com/presentation/d/1KPUpbwwkNCe5dkujLZHlIwLRMtDhSrhHGaB6vuhhZjk/edit?usp=sharing)
+
+## Task
+
+Build a topology generation script that takes:
+
+- **Switch throughput** -- total switching capacity per switch (e.g. 6400 Gbps)
+- **NIC throughput** -- total escape throughput per network card (e.g. 800 Gbps)
+- **Link bandwidth** -- per-link bandwidth (e.g. 200 Gbps)
+- **Host count** -- total number of hosts (e.g. 128)
+
+And calculates a 2-layer CLOS topology with the minimum number of switches overall while staying symmetric and having no oversubscription.
+
+### Requirements
+
+1. **ID scheme**: `[0, num_hosts-1]` for hosts, `[num_hosts, num_hosts+num_switches-1]` for switches.
+2. **Output format**: JSON file containing a list of point-to-point links as `[src, dst, speed]` tuples.
+3. **Link aggregation**: Aggregate multiple links between the same device pair when possible.
+4. **Port reporting**: Output the utilized ports per layer and the number of switches per layer.
+
+### Stretch Goals
+
+- Robust sweep script over host counts `[4, 8, 16, 32, 64]` (powers of 2), idempotent so re-runs only trigger failed configurations.
+- Alternative topology support (e.g. Dragonfly).
+
+
 ## Example CLOS Architecture
 
 ![CLOS Topology](example_clos_topology.png)

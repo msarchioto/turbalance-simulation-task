@@ -89,15 +89,15 @@ def visualize_topology(
                 uplink_lines.append([p1, p2])
 
     if host_lines:
-        lc = LineCollection(host_lines, colors=COLORS["host_link"], linewidths=0.5, alpha=0.5)
+        lc = LineCollection(host_lines, colors=COLORS["host_link"], linewidths=1.5, alpha=0.6)
         ax.add_collection(lc)
     if uplink_lines:
-        lc = LineCollection(uplink_lines, colors=COLORS["uplink"], linewidths=0.8, alpha=0.4)
+        lc = LineCollection(uplink_lines, colors=COLORS["uplink"], linewidths=2.0, alpha=0.55)
         ax.add_collection(lc)
 
     # Draw nodes
-    node_size_host = max(8, 200 / max(len(hosts), 1))
-    node_size_switch = max(15, 300 / max(len(leafs), len(spines), 1))
+    node_size_host = min(25, max(8, 200 / max(len(hosts), 1)))
+    node_size_switch = min(35, max(15, 300 / max(len(leafs), len(spines), 1)))
 
     for nid in hosts:
         x, y = positions[nid]
