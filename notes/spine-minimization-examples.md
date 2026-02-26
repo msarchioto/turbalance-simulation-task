@@ -1,4 +1,4 @@
-# SLIDE 6 -- Spine Minimization: Numerical Examples
+# Spine Minimization: Numerical Examples
 
 ## Algorithm Recap
 
