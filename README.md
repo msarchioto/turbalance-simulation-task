@@ -69,9 +69,9 @@ uv run dragonfly-sweep \
 ```
 
 All commands produce a `.json` topology file and a `.png` network diagram
-side-by-side in the output directory (e.g. `output/topo_128.json` +
-`output/topo_128.png` for CLOS, `output/dragonfly_64.json` +
-`output/dragonfly_64.png` for Dragonfly).
+side-by-side in the output directory (e.g. `output_clos/topo_128.json` +
+`output_clos/topo_128.png` for CLOS, `output_dragonfly/dragonfly_64.json` +
+`output_dragonfly/dragonfly_64.png` for Dragonfly).
 
 ## Parameters
 
@@ -81,8 +81,8 @@ side-by-side in the output directory (e.g. `output/topo_128.json` +
 | `--nic-throughput` | Yes | Escape throughput per NIC (Gbps) | 800 |
 | `--link-bandwidth` | Yes | Per-link bandwidth (Gbps) | 200 |
 | `--num-hosts` | Yes | Total number of hosts (single run only) | 128 |
-| `--output` | No | Output JSON path (single run only, default: `output/topo_{num_hosts}.json`) | `output/topo_128.json` |
-| `--output-dir` | No | Output directory (sweep only, default: `output/`) | `output/` |
+| `--output` | No | Output JSON path (single run only, default: `output_clos/topo_{num_hosts}.json` or `output_dragonfly/dragonfly_{num_hosts}.json`) | `output_clos/topo_128.json` |
+| `--output-dir` | No | Output directory (sweep only, default: `output_clos/` or `output_dragonfly/`) | `output_dragonfly/` |
 | `--force` | No | Re-generate even if output exists (sweep only) | - |
 
 ## How It Works
@@ -332,6 +332,55 @@ network cost is still much lower than CLOS.
 - **Simple output contract**: flat `[src, dst, speed]` links with aggregated
   host-to-router bandwidth
 
+#### Design Problems Implied by These Parameters
+
+- **Router-count-first bias can underprovision global bandwidth**: minimizing
+  `a*g` tends to pick low `h` at larger host counts (for 128 hosts, current
+  solution uses `h=1`), which increases inter-group contention.
+- **No explicit bandwidth objective**: optimization does not directly maximize
+  bisection bandwidth, minimize global oversubscription, or optimize worst-case
+  all-to-all traffic.
+- **Host-capacity favored over path diversity**: high `p` is often selected
+  when it reduces router count, but this can reduce available global channels
+  per router.
+- **Deterministic least-loaded wiring is valid, not traffic-aware**: degree
+  constraints are satisfied exactly, but wiring is not optimized for workload
+  locality or specific traffic matrices.
+- **Single-objective economics**: CAPEX efficiency is excellent, but the model
+  intentionally leaves performance-oriented choices to future policy modes.
+
+#### Alternative Dragonfly Parameter Policies
+
+Use the same feasibility constraints (`p*links_per_host + (a-1) + h = k`,
+`2 <= g <= a*h + 1`, and `N = p*a*g`) with different selection objectives:
+
+1. **Global-bandwidth-first**
+   - Objective: maximize `h` first, then minimize routers.
+   - Effect: stronger inter-group capacity and better all-to-all behavior.
+2. **Balanced policy**
+   - Objective: minimize `|a - 2h|` first (and optionally `|a - 2p*links_per_host|`).
+   - Effect: avoids extreme local/global imbalance.
+3. **Oversubscription-bounded**
+   - Objective: enforce minimum global-to-terminal ratio (e.g. `h >= alpha * p*links_per_host`),
+     then minimize routers.
+   - Effect: predictable upper bound on global bottlenecks.
+4. **Path-diversity-first**
+   - Objective: prefer larger `g` and/or `h` under fixed feasibility.
+   - Effect: more inter-group route choices at higher router cost.
+5. **Pareto frontier mode**
+   - Objective: return multiple non-dominated `(a,h,p,g)` choices across
+     router count vs global bandwidth.
+   - Effect: makes cost/performance trade-offs explicit instead of hard-coding one point.
+
+For the 128-host case (`k=32`, `links_per_host=4`), valid alternatives include:
+
+- **Cost-optimal (current)**: `a=4, h=1, p=7, g=5` (`20` routers)
+- **Balanced/high-global**: `a=4, h=5, p=6, g=6` (`24` routers)
+- **Global-heavy**: `a=5, h=4, p=6, g=5` (`25` routers)
+
+All are valid Dragonfly designs; they differ in infrastructure cost vs
+inter-group bandwidth.
+
 
 ### Network Size
 
@@ -427,7 +476,7 @@ Core CLOS calculation engine.
 CLI entry point for single-topology generation (command: `clos-generate`).
 
 - Parses `--switch-throughput`, `--nic-throughput`, `--link-bandwidth`, `--num-hosts`, and optional `--output` arguments.
-- Calls `generate_clos_topology` and writes the link list to a JSON file (default: `output/topo_{N}.json`).
+- Calls `generate_clos_topology` and writes the link list to a JSON file (default: `output_clos/topo_{N}.json`).
 - Automatically generates a matching PNG diagram alongside the JSON output.
 - Prints the topology summary (host/leaf/spine counts, port utilization) to stdout.
 
@@ -470,7 +519,7 @@ Core Dragonfly calculation engine.
 
 CLI entry point for single-topology generation (command: `dragonfly-generate`).
 
-- Same arguments as `clos-generate` with default output path `output/dragonfly_{N}.json`.
+- Same arguments as `clos-generate` with default output path `output_dragonfly/dragonfly_{N}.json`.
 - Produces both JSON and PNG output.
 
 #### `sweep.py`
@@ -478,7 +527,7 @@ CLI entry point for single-topology generation (command: `dragonfly-generate`).
 Batch runner across host counts `[4, 8, 16, 32, 64]` (command: `dragonfly-sweep`).
 
 - Same idempotency and reporting semantics as `clos-sweep`.
-- Output files: `output/dragonfly_{N}.json` + `.png`.
+- Output files: `output_dragonfly/dragonfly_{N}.json` + `.png`.
 
 #### `visualize.py`
 
