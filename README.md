@@ -372,12 +372,6 @@ Use the same feasibility constraints (`p*links_per_host + (a-1) + h = k`,
      router count vs global bandwidth.
    - Effect: makes cost/performance trade-offs explicit instead of hard-coding one point.
 
-For the 128-host case (`k=32`, `links_per_host=4`), valid alternatives include:
-
-- **Cost-optimal (current)**: `a=4, h=1, p=7, g=5` (`20` routers)
-- **Balanced/high-global**: `a=4, h=5, p=6, g=6` (`24` routers)
-- **Global-heavy**: `a=5, h=4, p=6, g=5` (`25` routers)
-
 All are valid Dragonfly designs; they differ in infrastructure cost vs
 inter-group bandwidth.
 
