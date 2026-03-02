@@ -1,8 +1,4 @@
-"""Idempotent sweep runner that generates Dragonfly topologies across host counts.
-
-Iterates host counts [4, 8, 16, 32, 64] (powers of 2), skips runs where
-the output file already exists, and reports results per configuration.
-"""
+"""Idempotent sweep runner for Dragonfly High-BW topologies."""
 
 from __future__ import annotations
 
@@ -10,17 +6,17 @@ import argparse
 import sys
 from pathlib import Path
 
-from dragonfly_generator.topology import generate_dragonfly_topology
 from dragonfly_generator.visualize import visualize_topology
+from dragonfly_high_bw_generator.topology import generate_dragonfly_topology
 
 
-DEFAULT_HOST_COUNTS = [2**i for i in range(2, 7)]  # [4, 8, 16, 32, 64]
+DEFAULT_HOST_COUNTS = [2**i for i in range(2, 8)]  # [4, 8, 16, 32, 64, 128]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="dragonfly-sweep",
-        description="Sweep Dragonfly topology generation across host counts [4..64] in powers of 2.",
+        prog="dragonfly-high-bw-sweep",
+        description="Sweep Dragonfly High-BW generation across host counts [4..128] in powers of 2.",
     )
     parser.add_argument(
         "--switch-throughput",
@@ -43,8 +39,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("output_dragonfly"),
-        help="Directory for output JSON files (default: output_dragonfly/)",
+        default=Path("output_dragonfly_high_bw"),
+        help="Directory for output JSON files (default: output_dragonfly_high_bw/)",
+    )
+    parser.add_argument(
+        "--router-budget-factor",
+        type=float,
+        default=2.0,
+        help="Allow up to ceil(min_routers * factor) routers for better balance (default: 2.0)",
     )
     parser.add_argument(
         "--force",
@@ -76,6 +78,7 @@ def main(argv: list[str] | None = None) -> int:
                 nic_throughput=args.nic_throughput,
                 link_bandwidth=args.link_bandwidth,
                 num_hosts=n_hosts,
+                router_budget_factor=args.router_budget_factor,
             )
         except ValueError as e:
             print(f"[FAIL] hosts={n_hosts}: {e}", file=sys.stderr)
@@ -88,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         visualize_topology(
             topo.to_json(),
             png_path,
-            f"Dragonfly Topology ({output_path.stem})",
+            f"Dragonfly High-BW Topology ({output_path.stem})",
             num_hosts=topo.num_hosts,
             routers_per_group=topo.routers_per_group,
             num_groups=topo.num_groups,

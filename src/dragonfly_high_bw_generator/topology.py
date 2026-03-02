@@ -1,23 +1,20 @@
-"""Core Dragonfly topology calculation and link generation.
+"""High-bandwidth Dragonfly topology calculation and link generation.
 
-Implements the canonical Dragonfly topology (Kim et al., 2008) with:
-- Hierarchical structure: router -> group -> system
-- Fully-connected intra-group (local) links
-- Round-robin inter-group (global) wiring
-- Host-to-router terminal connections
-
-Parameters (from the paper):
-    p -- terminals (hosts) per router
-    a -- routers per group
-    h -- global links per router
-    k -- router radix = p * links_per_host + (a - 1) + h
-    g -- number of groups = a * h + 1  (maximum-size)
-    N -- total hosts = p * a * g
+This variant keeps the same feasibility constraints as the canonical
+Dragonfly generator but uses a router-budget approach:
+  1. Find the minimum achievable router count.
+  2. Allow up to ceil(min_routers * budget_factor) routers.
+  3. Within that budget, optimize for balance:
+     a) minimize |a - 2h|          (global-link balance)
+     b) minimize |a - 2p*lph|      (terminal balance)
+     c) minimize total routers      (prefer fewer within budget)
+     d) minimize host overprovisioning
 """
 
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -66,7 +63,7 @@ class DragonflyTopology:
         host_bw = self.links_per_host * self.link_bandwidth
 
         lines = [
-            "=== Dragonfly Topology ===",
+            "=== Dragonfly High-BW Topology ===",
             f"Hosts:              {self.num_hosts}",
             f"  IDs:              [{self.host_id_range[0]}, {self.host_id_range[1]}]",
             f"  Links/host:       {self.links_per_host} x {self.link_bandwidth}G "
@@ -116,28 +113,13 @@ def _validate_inputs(
         )
 
 
-def _find_best_config(
+def _iter_valid_configs(
     ports_per_switch: int,
     links_per_host: int,
     num_hosts: int,
-) -> tuple[int, int, int, int]:
-    """Find (a, h, p, g) that accommodates num_hosts with minimum routers.
-
-    Searches all valid (a, h, g) triples where:
-        p = (k - (a-1) - h) / links_per_host  is a positive integer
-        N = p * a * g >= num_hosts
-        2 <= g <= a*h + 1
-
-    Returns the configuration with minimum total routers (a * g),
-    breaking ties by preferring configurations closer to the balanced
-    ratio a = 2h, then by lower host overprovisioning.
-    """
+):
+    """Yield all feasible (a, h, p, g) with their metrics."""
     k = ports_per_switch
-    best: tuple[int, int, int, int] | None = None
-    best_routers = float("inf")
-    best_imbalance = float("inf")
-    best_host_slack = float("inf")
-
     for h in range(1, k):
         for a in range(2, k):
             remaining = k - (a - 1) - h
@@ -151,64 +133,72 @@ def _find_best_config(
 
             g_max = a * h + 1
             for g in range(2, g_max + 1):
-                # Inter-group links count is (a * g * h) / 2 and must be integral.
                 if (a * g * h) % 2 != 0:
                     continue
                 capacity = p * a * g
                 if capacity < num_hosts:
                     continue
+                yield a, h, p, g
 
-                total_routers = a * g
-                # Use terminal channels per router (p * links_per_host) for balance.
-                imbalance = abs(a - 2 * h) + abs(a - 2 * p * links_per_host)
-                host_slack = capacity - num_hosts
 
-                if (
-                    (total_routers < best_routers)
-                    or (
-                        total_routers == best_routers
-                        and imbalance < best_imbalance
-                    )
-                    or (
-                        total_routers == best_routers
-                        and imbalance == best_imbalance
-                        and host_slack < best_host_slack
-                    )
-                ):
-                    best = (a, h, p, g)
-                    best_routers = total_routers
-                    best_imbalance = imbalance
-                    best_host_slack = host_slack
+def _find_best_config(
+    ports_per_switch: int,
+    links_per_host: int,
+    num_hosts: int,
+    router_budget_factor: float = 2.0,
+) -> tuple[int, int, int, int]:
+    """Find (a, h, p, g) that accommodates num_hosts with high-BW balance.
 
-    if best is None:
+    Two-pass approach:
+      Pass 1 — find minimum achievable router count.
+      Pass 2 — among configs with routers <= ceil(min * budget_factor),
+               select by:
+                 1) |a - 2h|          (global-link balance)
+                 2) |a - 2p*lph|      (terminal balance)
+                 3) total routers     (prefer fewer within budget)
+                 4) host slack        (overprovisioning)
+    """
+    configs = list(_iter_valid_configs(
+        ports_per_switch, links_per_host, num_hosts,
+    ))
+    if not configs:
         raise ValueError(
-            f"No valid Dragonfly configuration found for {num_hosts} hosts "
+            f"No valid Dragonfly High-BW configuration found for {num_hosts} hosts "
             f"with {ports_per_switch}-port switches and {links_per_host} links/host. "
             f"Try fewer hosts or higher switch throughput."
         )
 
+    min_routers = min(a * g for a, _, _, g in configs)
+    router_cap = math.ceil(min_routers * router_budget_factor)
+
+    best: tuple[int, int, int, int] | None = None
+    best_key = (float("inf"), float("inf"), float("inf"), float("inf"))
+
+    for a, h, p, g in configs:
+        total_routers = a * g
+        if total_routers > router_cap:
+            continue
+
+        key = (
+            abs(a - 2 * h),
+            abs(a - 2 * p * links_per_host),
+            total_routers,
+            p * a * g - num_hosts,
+        )
+        if key < best_key:
+            best = (a, h, p, g)
+            best_key = key
+
+    assert best is not None
     return best
 
 
 def _wire_global_links(
     a: int, g: int, h: int
 ) -> list[tuple[int, int]]:
-    """Compute inter-group global links as (router_offset, router_offset) pairs.
-
-    For maximum-size dragonfly (g = ah + 1), exactly one link connects each
-    group pair. Links are distributed across routers so each router uses
-    exactly h global ports.
-
-    For smaller dragonflies (g < ah + 1), multiple links per group pair are
-    created, still respecting per-router port budgets.
-
-    Returns list of (src_router_offset, dst_router_offset) into the flat
-    router array (index = group * a + router_in_group).
-    """
+    """Compute inter-group global links as (router_offset, router_offset) pairs."""
     total_routers = a * g
 
-    # Phase 1: build group-level interconnect as a regular multigraph where
-    # each group has degree a*h (one degree unit per global channel endpoint).
     target_group_degree = a * h
     group_remaining = [target_group_degree] * g
     group_pair_counts: dict[tuple[int, int], int] = {}
@@ -222,8 +212,6 @@ def _wire_global_links(
         if not candidates:
             raise ValueError("Unable to realize global links for given Dragonfly parameters")
 
-        # Prefer the least-used pair, then the candidate with highest remaining
-        # degree to avoid starving high-demand groups.
         g2 = min(
             candidates,
             key=lambda gi: (
@@ -241,8 +229,6 @@ def _wire_global_links(
     if any(v != 0 for v in group_remaining):
         raise ValueError("Failed to satisfy group-level global degree targets")
 
-    # Phase 2: map group-level multiplicities to router-level links while
-    # respecting h global ports per router.
     router_ports_used = [0] * total_routers
     links: list[tuple[int, int]] = []
 
@@ -271,27 +257,17 @@ def generate_dragonfly_topology(
     nic_throughput: int,
     link_bandwidth: int,
     num_hosts: int,
+    router_budget_factor: float = 2.0,
 ) -> DragonflyTopology:
-    """Generate a Dragonfly topology minimizing total router count.
-
-    Args:
-        switch_throughput: Total switching capacity per switch in Gbps.
-        nic_throughput: Escape throughput per NIC in Gbps.
-        link_bandwidth: Per-link bandwidth in Gbps.
-        num_hosts: Total number of hosts.
-
-    Returns:
-        DragonflyTopology with all links and metadata.
-
-    Raises:
-        ValueError: If inputs don't produce a valid topology.
-    """
+    """Generate a Dragonfly topology favoring high-balance global connectivity."""
     _validate_inputs(switch_throughput, nic_throughput, link_bandwidth, num_hosts)
 
     ports_per_switch = switch_throughput // link_bandwidth
     links_per_host = nic_throughput // link_bandwidth
 
-    a, h, p, g = _find_best_config(ports_per_switch, links_per_host, num_hosts)
+    a, h, p, g = _find_best_config(
+        ports_per_switch, links_per_host, num_hosts, router_budget_factor,
+    )
 
     actual_hosts = num_hosts
     router_id_start = actual_hosts
