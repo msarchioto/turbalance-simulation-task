@@ -18,6 +18,8 @@ clos-visualize = "clos_generator.visualize:main"
 dragonfly-generate = "dragonfly_generator.cli:main"
 dragonfly-sweep = "dragonfly_generator.sweep:main"
 dragonfly-visualize = "dragonfly_generator.visualize:main"
+dragonfly-high-bw-generate = "dragonfly_high_bw_generator.cli:main"
+dragonfly-high-bw-sweep = "dragonfly_high_bw_generator.sweep:main"
 
 [build-system]
 requires = ["uv_build>=0.10.6,<0.11.0"]

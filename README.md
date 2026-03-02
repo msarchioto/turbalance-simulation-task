@@ -66,12 +66,28 @@ uv run dragonfly-sweep \
   --nic-throughput 800 \
   --link-bandwidth 200
 
+# --- Dragonfly High-BW ---
+uv run dragonfly-high-bw-generate \
+  --switch-throughput 6400 \
+  --nic-throughput 800 \
+  --link-bandwidth 200 \
+  --num-hosts 128 \
+  --router-budget-factor 2.0
+
+uv run dragonfly-high-bw-sweep \
+  --switch-throughput 6400 \
+  --nic-throughput 800 \
+  --link-bandwidth 200 \
+  --router-budget-factor 2.0
+
 ```
 
 All commands produce a `.json` topology file and a `.png` network diagram
 side-by-side in the output directory (e.g. `output_clos/topo_128.json` +
 `output_clos/topo_128.png` for CLOS, `output_dragonfly/dragonfly_64.json` +
-`output_dragonfly/dragonfly_64.png` for Dragonfly).
+`output_dragonfly/dragonfly_64.png` for Dragonfly, and
+`output_dragonfly_high_bw/dragonfly_64.json` +
+`output_dragonfly_high_bw/dragonfly_64.png` for Dragonfly High-BW).
 
 ## Parameters
 
@@ -81,8 +97,9 @@ side-by-side in the output directory (e.g. `output_clos/topo_128.json` +
 | `--nic-throughput` | Yes | Escape throughput per NIC (Gbps) | 800 |
 | `--link-bandwidth` | Yes | Per-link bandwidth (Gbps) | 200 |
 | `--num-hosts` | Yes | Total number of hosts (single run only) | 128 |
-| `--output` | No | Output JSON path (single run only, default: `output_clos/topo_{num_hosts}.json` or `output_dragonfly/dragonfly_{num_hosts}.json`) | `output_clos/topo_128.json` |
-| `--output-dir` | No | Output directory (sweep only, default: `output_clos/` or `output_dragonfly/`) | `output_dragonfly/` |
+| `--output` | No | Output JSON path (single run only, default: `output_clos/topo_{num_hosts}.json`, `output_dragonfly/dragonfly_{num_hosts}.json`, or `output_dragonfly_high_bw/dragonfly_{num_hosts}.json`) | `output_clos/topo_128.json` |
+| `--output-dir` | No | Output directory (sweep only, default: `output_clos/`, `output_dragonfly/`, or `output_dragonfly_high_bw/`) | `output_dragonfly/` |
+| `--router-budget-factor` | No | Allow up to `ceil(min_routers * factor)` routers for better balance (High-BW only, default: 2.0) | 3.0 |
 | `--force` | No | Re-generate even if output exists (sweep only) | - |
 
 ## How It Works
@@ -107,7 +124,7 @@ Spine count is determined by two constraints:
 2. **Spine constraint** -- each spine must have enough ports for all leafs:
    `links_per_pair * num_leafs <= ports_per_switch`
 
-The algorithm maximizes `links_per_pair` (largest divisor of `north_ports`
+The algorithm maximizes `links_per_pair` (largest **INTEGER** divisor of `north_ports`
 that satisfies the spine constraint), which in turn minimizes `num_spines`:
 
 ```
@@ -279,12 +296,29 @@ uv run dragonfly-sweep \
   --switch-throughput 6400 \
   --nic-throughput 800 \
   --link-bandwidth 200
+
+uv run dragonfly-high-bw-generate \
+  --switch-throughput 6400 \
+  --nic-throughput 800 \
+  --link-bandwidth 200 \
+  --num-hosts 128 \
+  --router-budget-factor 2.0
+
+uv run dragonfly-high-bw-sweep \
+  --switch-throughput 6400 \
+  --nic-throughput 800 \
+  --link-bandwidth 200 \
+  --router-budget-factor 2.0
 ```
 
 ### Dragonfly Parameters
 
-The topology is defined by three core parameters derived from the same physical
-inputs as CLOS:
+The topology is defined by four core parameters:
+- `p` = hosts per router
+- `a` = routers per group
+- `h` = global links per router
+- `g` = number of groups (2 <= g <= a*h + 1)
+derived from the same physical inputs as CLOS:
 
 ```
 ports_per_switch (k) = switch_throughput / link_bandwidth
@@ -299,8 +333,7 @@ Each router's `k` ports are partitioned into:
 | Local | `a - 1` | Intra-group (all-to-all) |
 | Global | `h` | Inter-group |
 
-Where `p` = hosts per router, `a` = routers per group, `h` = global links per
-router. These satisfy: `p * links_per_host + (a - 1) + h = k`: every physical
+These satisfy: `p * links_per_host + (a - 1) + h = k`: every physical
 port on the switch is assigned exactly one role, with nothing wasted or
 overcommitted.
 
@@ -312,14 +345,24 @@ port equation and host-capacity constraints.
 The optimizer in `src/dragonfly_generator/topology.py` uses this objective:
 
 1. **Minimize router count first**: `total_routers = a * g`
-2. **Tie-break by balance**: minimize `|a - 2h| + |a - 2p*links_per_host|`
-3. **Tie-break by overprovisioning**: minimize `capacity - num_hosts`
+2. **Tie-break by balance** (topology symmetry): minimize
+   `|a - 2h| + |a - 2p*links_per_host|` — classical Dragonfly theory recommends
+   `a ≈ 2h` to keep local connectivity proportional to global bandwidth, avoiding
+   inter-group bottlenecks without wasting ports. The second term `a ≈ 2p*links_per_host`
+   ensures host injection rate scales with internal/global path capacity, preventing
+   designs where many hosts are served by too few network paths.
+3. **Tie-break by overprovisioning** (packing efficiency): minimize
+   `capacity - num_hosts` — prefers designs that waste the fewest host slots.
+   E.g. two designs both using the same routers but capacities 160 vs 132 for
+   128 hosts: the latter wastes only 4 slots instead of 32.
 
 This is a lexicographic optimization: lower router count dominates all other
 criteria. The trade-off is that aggressively minimizing routers can starve
 inter-group bandwidth: e.g. the 128-host result assigns only `h=1` global link
 per router, creating a significant bottleneck between groups. The overall
 network cost is still much lower than CLOS.
+
+See [Dragonfly High-BW Variant](#dragonfly-high-bw-variant).
 
 ### Dragonfly Design Philosophy (This Implementation)
 
@@ -359,7 +402,13 @@ Use the same feasibility constraints (`p*links_per_host + (a-1) + h = k`,
    - Effect: stronger inter-group capacity and better all-to-all behavior.
 2. **Balanced policy**
    - Objective: minimize `|a - 2h|` first (and optionally `|a - 2p*links_per_host|`).
-   - Effect: avoids extreme local/global imbalance.
+   - Rationale: each router has `(a-1)` local links and `h` global links;
+     traffic follows a local-global-local path (max 3 hops). Too few global
+     links create inter-group bottlenecks, too many waste expensive cables.
+     Under uniform traffic roughly half stays local and half leaves the group,
+     so balanced throughput occurs when `a ≈ 2h`. Minimizing `|a - 2h|` pushes
+     toward that sweet spot — similar scaling of local and global bandwidth
+     with fewer congestion hotspots. See [Dragonfly High-BW Variant](#dragonfly-high-bw-variant).
 3. **Oversubscription-bounded**
    - Objective: enforce minimum global-to-terminal ratio (e.g. `h >= alpha * p*links_per_host`),
      then minimize routers.
@@ -453,6 +502,77 @@ Practical rule of thumb in this project: use Dragonfly when router-count
 efficiency and global-link degree control matter most; use CLOS when simpler
 layout, easier operations, and predictable 2-layer behavior are preferred.
 
+### Dragonfly High-BW Variant
+
+The High-BW variant in `src/dragonfly_high_bw_generator/topology.py` keeps the
+same feasibility constraints but uses a **router-budget** approach:
+
+1. Find the minimum achievable router count across all valid configurations.
+2. Allow configurations with up to `ceil(min_routers * budget_factor)` routers.
+3. Within that budget, optimize for balance:
+   - Minimize `|a - 2h|` (global-link balance)
+   - Then minimize `|a - 2p*links_per_host|` (terminal balance)
+   - Then minimize total routers (prefer fewer within budget)
+   - Then minimize `capacity - num_hosts` (host overprovisioning)
+
+The `--router-budget-factor` (default: 2.0) controls how many extra routers
+the optimizer may use relative to the absolute minimum. For example, if the
+minimum feasible router count is 10, a budget factor of 2.0 allows up to
+`ceil(10 * 2.0) = 20` routers. Higher factors give the optimizer more room
+to pick balanced `(a, h)` values at the cost of more hardware. The baseline
+is always the minimum router count that can physically accommodate the
+requested host count with the given switch radix.
+
+This trades a modest increase in router count for significantly better bandwidth
+balance, especially at higher host counts where minimum-router configs are
+heavily constrained.
+
+Default output path for this variant is:
+
+- Single run: `output_dragonfly_high_bw/dragonfly_{num_hosts}.json`
+- Sweep: `output_dragonfly_high_bw/dragonfly_{num_hosts}.json` + `.png`
+
+## Dragonfly - Various Configs Performances
+
+All configurations use: switch throughput = 6400 Gbps, NIC throughput = 800 Gbps, link bandwidth = 200 Gbps.
+
+### 32 Hosts
+
+| Metric | Standard (`dragonfly_generator`) | High-BW (budget 2.0) | High-BW (budget 3.0) |
+|---|---|---|---|
+| Groups (g) | 2 | 2 | 2 |
+| Routers | 6 (a=3) | 12 (a=6) | 12 (a=6) |
+| Global links | 18 | 18 | 18 |
+| Intra-group BW (Gbps) | 600 | 3000 | 3000 |
+| Group-to-group BW (Gbps) | 3600 | 3600 | 3600 |
+
+### 64 Hosts
+
+| Metric | Standard (`dragonfly_generator`) | High-BW (budget 2.0) | High-BW (budget 3.0) |
+|---|---|---|---|
+| Groups (g) | 5 | 2 | 2 |
+| Routers | 10 (a=2) | 12 (a=6) | 28 (a=14) |
+| Global links | 15 | 18 | 98 |
+| Intra-group BW (Gbps) | 200 | 3000 | 18200 |
+| Group-to-group BW (Gbps) | 200-400 | 3600 | 19600 |
+
+### 128 Hosts
+
+| Metric | Standard (`dragonfly_generator`) | High-BW (budget 2.0) | High-BW (budget 3.0) |
+|---|---|---|---|
+| Groups (g) | 5 | 4 | 4 |
+| Routers | 20 (a=4) | 24 (a=6) | 56 (a=14) |
+| Global links | 10 | 36 | 196 |
+| Intra-group BW (Gbps) | 1200 | 3000 | 18200 |
+| Group-to-group BW (Gbps) | 200 | 1200 | 6400-6600 |
+
+### Observations
+
+- **Standard generator bottlenecks at scale.** At 64 and 128 hosts, intra-group BW drops to 200-1200 Gbps and group-to-group BW to 200 Gbps — both far below NIC capacity. The optimizer minimizes routers at the cost of very small groups (a=2-4) and few global links.
+- **High-BW budget 2.0 is a cost-effective middle ground.** Doubling the router budget yields 3000 Gbps intra-group BW across all sizes and 15-30x better inter-group BW at 128 hosts (1200 vs 200 Gbps), with only 20% more routers at 128 hosts.
+- **Budget 3.0 dominates at 64+ hosts but over-provisions at 32.** At 32 hosts, budget 3.0 produces identical topology to 2.0 (both saturate at a=6, g=2). The investment only pays off at 64+ hosts where it delivers 18200 Gbps intra-group and near-switch-capacity inter-group BW.
+- **Intra-group BW scales quadratically with `a`.** Since local links are all-to-all, doubling routers-per-group roughly 4x the intra-group bandwidth (e.g., a=2: 200 Gbps vs a=14: 18200 Gbps).
+
 ## Source Modules
 
 ### CLOS (`src/clos_generator/`)
@@ -536,6 +656,32 @@ Renders a Dragonfly topology as a grouped network diagram (command: `dragonfly-v
 - Arranges groups in a circular layout with routers clustered per group.
 - Draws host, local, and global links with distinct colors and styles.
 - Infers group structure from the link list without external metadata.
+
+### Dragonfly High-BW (`src/dragonfly_high_bw_generator/`)
+
+#### `topology.py`
+
+High-bandwidth-focused Dragonfly calculation engine.
+
+- Uses the same feasibility checks and wiring model as the base Dragonfly implementation.
+- Changes the optimization objective to lexicographic:
+  minimize `|a - 2h|`, then `|a - 2p*links_per_host|`, then host slack.
+- Does not minimize total router count first.
+
+#### `cli.py`
+
+Single-topology High-BW generator (command: `dragonfly-high-bw-generate`).
+
+- Same required arguments as `dragonfly-generate`.
+- Default output path: `output_dragonfly_high_bw/dragonfly_{N}.json`.
+
+#### `sweep.py`
+
+Batch High-BW generator across host counts `[4, 8, 16, 32, 64]`
+(command: `dragonfly-high-bw-sweep`).
+
+- Same idempotency and reporting semantics as `dragonfly-sweep`.
+- Output files: `output_dragonfly_high_bw/dragonfly_{N}.json` + `.png`.
 
 ## Validation
 
