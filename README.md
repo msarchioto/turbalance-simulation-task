@@ -318,6 +318,7 @@ The topology is defined by four core parameters:
 - `a` = routers per group
 - `h` = global links per router
 - `g` = number of groups (2 <= g <= a*h + 1)
+
 derived from the same physical inputs as CLOS:
 
 ```
