@@ -43,7 +43,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output",
         type=Path,
         default=None,
-        help="Output JSON file path (default: output/topo_{num_hosts}.json)",
+        help="Output JSON file path (default: output_clos/topo_{num_hosts}.json)",
     )
     return parser.parse_args(argv)
 
@@ -62,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
 
-    output_path = args.output or Path(f"output/topo_{args.num_hosts}.json")
+    output_path = args.output or Path(f"output_clos/topo_{args.num_hosts}.json")
     topo.write_json(output_path)
 
     print(topo.summary())

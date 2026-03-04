@@ -43,8 +43,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("output"),
-        help="Directory for output JSON files (default: output/)",
+        default=Path("output_clos"),
+        help="Directory for output JSON files (default: output_clos/)",
     )
     parser.add_argument(
         "--force",
